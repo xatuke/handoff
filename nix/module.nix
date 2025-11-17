@@ -45,7 +45,9 @@ in {
     users.users.${cfg.user}.extraGroups = ["bluetooth"];
 
     hardware.bluetooth.settings = {
-      DeviceID = "bluetooth:004C:0000:0000";
+      General = {
+        DeviceID = "bluetooth:004C:0000:0000";
+      };
     };
 
     # Configure bluetooth main.conf for Apple DeviceID
