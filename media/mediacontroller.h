@@ -9,8 +9,11 @@
 #include <QThread>
 #include <QStringList>
 #include <QVariantMap>
+#include <QDateTime>
 #include <iostream>
 #include "pulseaudio.h"
+
+extern QString getTimestamp();
 
 class MediaController : public QObject {
     Q_OBJECT
