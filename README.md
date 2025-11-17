@@ -1,6 +1,6 @@
-# AirPods Linux-iPhone Seamless Handoff
+# AirPods Linux-Apple Seamless Handoff
 
-Daemon for seamless audio handoff between Linux and iPhone using AirPods.
+Daemon for seamless audio handoff between Linux and Apple using AirPods.
 
 ## Requirements
 
@@ -70,7 +70,7 @@ To run automatically on login:
 mkdir -p ~/.config/systemd/user
 cat > ~/.config/systemd/user/airpods-handoff.service << EOF
 [Unit]
-Description=AirPods Linux-iPhone Handoff
+Description=AirPods Linux-Apple Handoff
 After=bluetooth.target
 
 [Service]
