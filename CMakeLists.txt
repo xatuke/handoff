@@ -19,3 +19,7 @@ target_link_libraries(airpods-handoff
 )
 
 target_include_directories(airpods-handoff PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+
+install(TARGETS airpods-handoff
+    RUNTIME DESTINATION bin
+)

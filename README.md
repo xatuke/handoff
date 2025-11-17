@@ -40,6 +40,16 @@ sudo emerge -av dev-qt/qtbase dev-qt/qtconnectivity dev-util/cmake
 sudo xbps-install -S qt6-base-devel qt6-connectivity-devel cmake gcc
 ```
 
+**NixOS**
+Import the overlay and nixosModule and then use the following
+```
+services.airpods-handoff = {
+    enable = true;
+    user = "xatuke"; // use your own user or use root idk
+    macAddress = "F4:55:6F:E5:1A:AF"; // use your airpods mac address
+};
+```
+
 ## Building
 
 ```bash
