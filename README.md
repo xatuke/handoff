@@ -51,6 +51,17 @@ make
 
 ## Usage
 
+### Change DeviceID
+
+Change/Set your DeviceID to that of Apple's in `/etc/bluetooth/main.conf` this is something the AirPods cache so you will have to re-pair your airpods.
+`DeviceID = bluetooth:004C:0000:0000`
+
+After changing this restart the bluetooth service and remove and re-pair your airpods, you only have to do this once.
+
+```bash
+sudo systemctl restart bluetooth
+```
+
 ```bash
 # Get your AirPods MAC address
 bluetoothctl devices
