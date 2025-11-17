@@ -44,11 +44,15 @@ in {
     # Add user to bluetooth group
     users.users.${cfg.user}.extraGroups = ["bluetooth"];
 
+    hardware.bluetooth.settings = {
+      DeviceID = "bluetooth:004C:0000:0000";
+    };
+
     # Configure bluetooth main.conf for Apple DeviceID
-    environment.etc."bluetooth/main.conf".text = mkAfter ''
-      [General]
-      DeviceID = bluetooth:004C:0000:0000
-    '';
+    # environment.etc."bluetooth/main.conf".text = mkAfter ''
+    #   [General]
+    #   DeviceID = bluetooth:004C:0000:0000
+    # '';
 
     systemd.services.airpods-handoff = {
       description = "AirPods Linux-Apple Handoff";
