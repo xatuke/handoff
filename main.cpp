@@ -33,13 +33,30 @@ public:
         media = new MediaController(deviceMac, this);
         connect(media, &MediaController::playbackStarted, this, &AirPodsHandoff::onPlaybackStarted);
 
+        // Setup keepalive timer to detect dead connections
+        keepaliveTimer = new QTimer(this);
+        connect(keepaliveTimer, &QTimer::timeout, this, &AirPodsHandoff::checkNotificationHealth);
+        keepaliveTimer->start(60000);  // Check every 60 seconds
+
         // Connect to AirPods
         connectToAirPods();
+    }
+
+    bool isSocketConnected() const {
+        return socket && socket->isOpen() && socket->state() == QBluetoothSocket::SocketState::ConnectedState;
     }
 
 private slots:
     void onConnected() {
         std::cout << "[" << getTimestamp().toStdString() << "] [Handoff] Connected to AirPods" << std::endl;
+
+        // Reset reconnection state on successful connection
+        reconnectAttempts = 0;
+        if (reconnectTimer) {
+            reconnectTimer->stop();
+            reconnectTimer->deleteLater();
+            reconnectTimer = nullptr;
+        }
 
         // Send handshake
         socket->write(Packets::Connection::HANDSHAKE);
@@ -59,6 +76,9 @@ private slots:
         if (data.startsWith(Packets::Connection::FEATURES_ACK)) {
             std::cout << "[" << getTimestamp().toStdString() << "] [Handoff] Received FEATURES_ACK - requesting notifications" << std::endl;
             socket->write(Packets::Connection::REQUEST_NOTIFICATIONS);
+
+            // Start tracking notification health from now
+            lastNotificationTime = QDateTime::currentMSecsSinceEpoch();
             return;
         }
 
@@ -66,6 +86,9 @@ private slots:
         if (data.startsWith(Packets::AudioSource::HEADER)) {
             auto newSource = Packets::AudioSource::parse(data);
             if (newSource.isValid) {
+                // Update last notification time
+                lastNotificationTime = QDateTime::currentMSecsSinceEpoch();
+
                 QString typeStr = (newSource.type == Packets::AudioSource::NONE) ? "NONE" :
                                 (newSource.type == Packets::AudioSource::CALL) ? "CALL" : "MEDIA";
                 std::cout << "[" << getTimestamp().toStdString() << "] [Handoff] Audio source: " << newSource.deviceMac.toHex().toStdString()
@@ -118,7 +141,7 @@ private slots:
 
     void onPlaybackStarted() {
         // If socket is not connected, we can't do handoff - just try to force reclaim audio
-        if (!socket || !socket->isOpen()) {
+        if (!isSocketConnected()) {
             std::cout << "[" << getTimestamp().toStdString() << "] [Handoff] Playback started but socket disconnected - forcing audio reclaim" << std::endl;
             media->reclaimAudioStream();
             return;
@@ -129,7 +152,10 @@ private slots:
             if (currentSource.type == Packets::AudioSource::NONE) {
                 std::cout << "[" << getTimestamp().toStdString() << "] [Handoff] Playback started - no device has audio" << std::endl;
                 // Proactively claim ownership
-                socket->write(Packets::OwnsConnection::CLAIM);
+                qint64 written = socket->write(Packets::OwnsConnection::CLAIM);
+                if (written == -1) {
+                    std::cerr << "[" << getTimestamp().toStdString() << "] [Handoff] Failed to send OWNS_CONNECTION" << std::endl;
+                }
                 return;
             }
 
@@ -148,9 +174,12 @@ private slots:
 
         // Claim ownership and reclaim audio stream
         std::cout << "[" << getTimestamp().toStdString() << "] [Handoff] Sending OWNS_CONNECTION (claim)" << std::endl;
-        socket->write(Packets::OwnsConnection::CLAIM);
+        qint64 written = socket->write(Packets::OwnsConnection::CLAIM);
+        if (written == -1) {
+            std::cerr << "[" << getTimestamp().toStdString() << "] [Handoff] Failed to send OWNS_CONNECTION" << std::endl;
+        }
 
-        // Try to reclaim via suspend/resume (fallback to profile cycling if needed)
+        // Reclaim audio stream
         media->reclaimAudioStream();
     }
 
@@ -160,16 +189,128 @@ private slots:
         // Clear state since we can't get updates anymore
         currentSource = Packets::AudioSource::Info();
         shouldReclaimOnNone = false;
+        lastNotificationTime = 0;  // Reset notification tracking
 
-        // Try to reconnect after a short delay
-        QTimer::singleShot(2000, this, [this]() {
+        // Don't schedule reconnection if already scheduled
+        if (reconnectTimer) {
+            return;
+        }
+
+        // Calculate exponential backoff delay (2s, 4s, 8s, max 30s)
+        int delay = std::min(2000 * (1 << reconnectAttempts), 30000);
+        reconnectAttempts++;
+
+        std::cout << "[" << getTimestamp().toStdString() << "] [Handoff] Scheduling reconnection in "
+                 << delay / 1000 << "s (attempt " << reconnectAttempts << ")" << std::endl;
+
+        // Try to reconnect after delay
+        reconnectTimer = new QTimer(this);
+        reconnectTimer->setSingleShot(true);
+        connect(reconnectTimer, &QTimer::timeout, this, [this]() {
+            reconnectTimer->deleteLater();
+            reconnectTimer = nullptr;
             std::cout << "[" << getTimestamp().toStdString() << "] [Handoff] Attempting to reconnect..." << std::endl;
             connectToAirPods();
         });
+        reconnectTimer->start(delay);
+    }
+
+    void checkNotificationHealth() {
+        // If socket is not connected, nothing to check
+        if (!isSocketConnected()) {
+            return;
+        }
+
+        // Check if we've received any notifications recently (5 minutes threshold)
+        qint64 now = QDateTime::currentMSecsSinceEpoch();
+        qint64 timeSinceLastNotification = now - lastNotificationTime;
+        const qint64 NOTIFICATION_TIMEOUT = 5 * 60 * 1000;  // 5 minutes
+
+        if (lastNotificationTime > 0 && timeSinceLastNotification > NOTIFICATION_TIMEOUT) {
+            std::cerr << "[" << getTimestamp().toStdString() << "] [Handoff] No notifications for "
+                     << timeSinceLastNotification / 60000 << " minutes - socket may be dead" << std::endl;
+            std::cout << "[" << getTimestamp().toStdString() << "] [Handoff] Forcing socket reconnection..." << std::endl;
+
+            // Force disconnect and reconnect
+            if (socket) {
+                socket->disconnectFromService();
+            }
+        }
+    }
+
+    void onStateChanged(QBluetoothSocket::SocketState state) {
+        QString stateStr;
+        switch (state) {
+            case QBluetoothSocket::SocketState::UnconnectedState:
+                stateStr = "Unconnected";
+                break;
+            case QBluetoothSocket::SocketState::ServiceLookupState:
+                stateStr = "ServiceLookup";
+                break;
+            case QBluetoothSocket::SocketState::ConnectingState:
+                stateStr = "Connecting";
+                break;
+            case QBluetoothSocket::SocketState::ConnectedState:
+                stateStr = "Connected";
+                break;
+            case QBluetoothSocket::SocketState::ClosingState:
+                stateStr = "Closing";
+                break;
+            default:
+                stateStr = "Unknown";
+        }
+        std::cout << "[" << getTimestamp().toStdString() << "] [Handoff] Socket state: " << stateStr.toStdString() << std::endl;
     }
 
     void onError(QBluetoothSocket::SocketError error) {
-        std::cerr << "[" << getTimestamp().toStdString() << "] [Handoff] Socket error: " << static_cast<int>(error) << std::endl;
+        std::cerr << "[" << getTimestamp().toStdString() << "] [Handoff] Socket error: " << static_cast<int>(error);
+
+        // Log error type for debugging
+        switch (error) {
+            case QBluetoothSocket::SocketError::ServiceNotFoundError:
+                std::cerr << " (ServiceNotFoundError)" << std::endl;
+                break;
+            case QBluetoothSocket::SocketError::HostNotFoundError:
+                std::cerr << " (HostNotFoundError)" << std::endl;
+                break;
+            case QBluetoothSocket::SocketError::NetworkError:
+                std::cerr << " (NetworkError)" << std::endl;
+                break;
+            case QBluetoothSocket::SocketError::UnknownSocketError:
+                std::cerr << " (UnknownSocketError)" << std::endl;
+                break;
+            default:
+                std::cerr << std::endl;
+        }
+
+        // If we get an error during connection attempt, schedule reconnection
+        // (errors during active connection will trigger onDisconnected instead)
+        if (error == QBluetoothSocket::SocketError::ServiceNotFoundError ||
+            error == QBluetoothSocket::SocketError::HostNotFoundError ||
+            error == QBluetoothSocket::SocketError::NetworkError) {
+
+            // Don't retry if already scheduled
+            if (reconnectTimer) {
+                return;
+            }
+
+            // Calculate exponential backoff delay (2s, 4s, 8s, max 30s)
+            int delay = std::min(2000 * (1 << reconnectAttempts), 30000);
+            reconnectAttempts++;
+
+            std::cout << "[" << getTimestamp().toStdString() << "] [Handoff] Scheduling reconnection in "
+                     << delay / 1000 << "s (attempt " << reconnectAttempts << ")" << std::endl;
+
+            reconnectTimer = new QTimer(this);
+            reconnectTimer->setSingleShot(true);
+            connect(reconnectTimer, &QTimer::timeout, this, [this]() {
+                reconnectTimer->deleteLater();
+                reconnectTimer = nullptr;
+                std::cout << "[" << getTimestamp().toStdString() << "] [Handoff] Attempting to reconnect..." << std::endl;
+                connectToAirPods();
+            });
+            reconnectTimer->start(delay);
+        }
     }
 
 private:
@@ -189,6 +330,7 @@ private:
         connect(socket, &QBluetoothSocket::disconnected, this, &AirPodsHandoff::onDisconnected);
         connect(socket, QOverload<QBluetoothSocket::SocketError>::of(&QBluetoothSocket::errorOccurred),
                 this, &AirPodsHandoff::onError);
+        connect(socket, &QBluetoothSocket::stateChanged, this, &AirPodsHandoff::onStateChanged);
 
         // Connect to AirPods AACP service
         QBluetoothAddress addr(airpodsMac);
@@ -201,6 +343,10 @@ private:
     MediaController *media = nullptr;
     Packets::AudioSource::Info currentSource;
     bool shouldReclaimOnNone = false;  // Set to true when another device takes audio from us
+    int reconnectAttempts = 0;  // Track reconnection attempts for exponential backoff
+    QTimer *reconnectTimer = nullptr;  // Timer for reconnection attempts
+    QTimer *keepaliveTimer = nullptr;  // Timer to check notification health
+    qint64 lastNotificationTime = 0;  // Timestamp of last received AUDIO_SOURCE notification
 };
 
 int main(int argc, char *argv[]) {
