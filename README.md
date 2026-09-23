@@ -1,3 +1,5 @@
+
+
 # AirPods Linux-Apple Seamless Handoff
 
 Daemon for seamless audio handoff between Linux and Apple using AirPods.
@@ -5,7 +7,7 @@ Daemon for seamless audio handoff between Linux and Apple using AirPods.
 ## Requirements
 
 - Qt6 (Core, Bluetooth, DBus)
-- PulseAudio or PipeWire
+- PulseAudio or PipeWire (with `pactl` available)
 - AirPods paired and connected to Linux
 
 ## Install Dependencies
