@@ -95,9 +95,8 @@ private slots:
                          << " (" << typeStr.toStdString() << ")" << std::endl;
 
                 // Check if another device took audio from us
-                bool weHadAudio = currentSource.isValid &&
-                                 currentSource.type != Packets::AudioSource::NONE &&
-                                 currentSource.deviceMac == localMac;
+                bool weHadAudio = lastActiveSource.isValid &&
+                                  lastActiveSource.deviceMac == localMac;
 
                 bool otherDeviceHasAudio = newSource.type != Packets::AudioSource::NONE &&
                                           newSource.deviceMac != localMac;
@@ -131,9 +130,10 @@ private slots:
                     }
                 }
 
-                // Remember last non-NONE source
+                currentSource = newSource;
+                // A switch can report NONE between the old and new active sources.
                 if (newSource.type != Packets::AudioSource::NONE) {
-                    currentSource = newSource;
+                    lastActiveSource = newSource;
                 }
             }
         }
@@ -149,25 +149,17 @@ private slots:
 
         // Check if we need to reclaim audio
         if (currentSource.isValid) {
-            if (currentSource.type == Packets::AudioSource::NONE) {
-                std::cout << "[" << getTimestamp().toStdString() << "] [Handoff] Playback started - no device has audio" << std::endl;
-                // Proactively claim ownership
-                qint64 written = socket->write(Packets::OwnsConnection::CLAIM);
-                if (written == -1) {
-                    std::cerr << "[" << getTimestamp().toStdString() << "] [Handoff] Failed to send OWNS_CONNECTION" << std::endl;
-                }
-                return;
-            }
-
             std::cout << "[" << getTimestamp().toStdString() << "] [Handoff] Comparing MACs - Current: " << currentSource.deviceMac.toHex().toStdString()
                      << ", Local: " << localMac.toHex().toStdString() << std::endl;
 
-            if (currentSource.deviceMac == localMac) {
+            if (currentSource.type != Packets::AudioSource::NONE && currentSource.deviceMac == localMac) {
                 std::cout << "[" << getTimestamp().toStdString() << "] [Handoff] We already own audio, no handoff needed" << std::endl;
                 return;
             }
 
-            std::cout << "[" << getTimestamp().toStdString() << "] [Handoff] Another device has audio - reclaiming" << std::endl;
+            if (currentSource.type != Packets::AudioSource::NONE) {
+                std::cout << "[" << getTimestamp().toStdString() << "] [Handoff] Another device has audio - reclaiming" << std::endl;
+            }
         } else {
             std::cout << "[" << getTimestamp().toStdString() << "] [Handoff] Playback started - no AUDIO_SOURCE info yet, claiming proactively" << std::endl;
         }
@@ -177,9 +169,10 @@ private slots:
         qint64 written = socket->write(Packets::OwnsConnection::CLAIM);
         if (written == -1) {
             std::cerr << "[" << getTimestamp().toStdString() << "] [Handoff] Failed to send OWNS_CONNECTION" << std::endl;
+        } else {
+            // The other device can report NONE in response to this claim.
+            shouldReclaimOnNone = false;
         }
-
-        // Reclaim audio stream
         media->reclaimAudioStream();
     }
 
@@ -188,6 +181,7 @@ private slots:
 
         // Clear state since we can't get updates anymore
         currentSource = Packets::AudioSource::Info();
+        lastActiveSource = Packets::AudioSource::Info();
         shouldReclaimOnNone = false;
         lastNotificationTime = 0;  // Reset notification tracking
 
@@ -342,6 +336,7 @@ private:
     QBluetoothSocket *socket = nullptr;
     MediaController *media = nullptr;
     Packets::AudioSource::Info currentSource;
+    Packets::AudioSource::Info lastActiveSource;
     bool shouldReclaimOnNone = false;  // Set to true when another device takes audio from us
     int reconnectAttempts = 0;  // Track reconnection attempts for exponential backoff
     QTimer *reconnectTimer = nullptr;  // Timer for reconnection attempts
